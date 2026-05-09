@@ -9,11 +9,16 @@ from telegram.ext import MessageHandler, filters
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from PIL import Image, ImageDraw, ImageFont
 import os
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
+
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 ADMIN_ID = 7770044439
+
+
 
 HIT_REACTIONS = [
     "🤛 ударил",
@@ -489,6 +494,29 @@ app.add_handler(
 app.add_handler(CallbackQueryHandler(handle_buttons, pattern="^(naherpoyti|create_marina|top)$"))
 app.add_handler(CallbackQueryHandler(send_quiz, pattern="^quiz$"))
 app.add_handler(CallbackQueryHandler(check_answer, pattern="^answer_"))
+
+
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/health':
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'OK')
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+def run_health_server():
+    # Получаем порт из переменной окружения (Render автоматически подставит 10000)
+    # Локально используем 8000, если PORT не задан
+    port = int(os.environ.get('PORT', 10000))
+    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    print(f"🔧 Health server запущен на порту {port}")
+    server.serve_forever()
+
+# Запускаем HTTP‑сервер в отдельном потоке (daemon=True — завершится при остановке бота)
+health_thread = threading.Thread(target=run_health_server, daemon=True)
+health_thread.start()
 
 
 app.run_polling()
