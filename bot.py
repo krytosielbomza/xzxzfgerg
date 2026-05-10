@@ -11,6 +11,14 @@ from PIL import Image, ImageDraw, ImageFont
 import os
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
+from flask import Flask
+
+
+app = Flask(__name__)
+
+@app.route('/', methods=['HEAD'])
+def head_handler():
+    return '', 200
 
 
 load_dotenv()
