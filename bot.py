@@ -14,11 +14,6 @@ import threading
 from flask import Flask
 
 
-app = Flask(__name__)
-
-@app.route('/', methods=['HEAD'])
-def head_handler():
-    return '', 200
 
 
 load_dotenv()
@@ -518,6 +513,14 @@ app.add_handler(CallbackQueryHandler(check_answer, pattern="^answer_"))
 
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_HEAD(self):
+        if self.path == '/health':
+            self.send_response(200)
+            self.end_headers()
+        else:
+            self.send_response(404)
+            self.end_headers()
+
     def do_GET(self):
         if self.path == '/health':
             self.send_response(200)
