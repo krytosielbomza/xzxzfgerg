@@ -70,6 +70,12 @@ async def handle_hit(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
 
+async def handle_134(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_message = update.message.text
+    if user_message == '134':
+        await update.message.reply_text('код 134 запущен.')
+
+
 class Database:
     def __init__(self, db_path="bot.db"):
         self.db_path = db_path
@@ -477,6 +483,13 @@ app.add_handler(
     MessageHandler(
         filters.TEXT & filters.Regex(re.compile(r"^ударить", re.IGNORECASE)),
         handle_hit
+    )
+)
+
+app.add_handler(
+    MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        handle_134
     )
 )
 
