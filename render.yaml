@@ -5,11 +5,13 @@ services:
     plan: free
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python bot.py"
+    healthCheckPath: /health
+    healthCheckIntervalSeconds: 30
     environment:
       - key: BOT_TOKEN
         fromSecret: bot-token
       - key: WEBHOOK_URL
-        value: "https://myboobobt.onrender.com"
+        value: "https://myboobobt.onrender.com"  # замените на ваше имя
       - key: PORT
         value: "10000"
     envVarSecrets:
