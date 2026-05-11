@@ -204,29 +204,28 @@ async def remove_points_command(update: Update, context: ContextTypes.DEFAULT_TY
 import threading
 
 app = Flask(__name__)
-application = None
-loop = None
 
+# Маршруты ДОЛЖНЫ быть определены вне любых функций
 @app.route('/')
 def index():
-    return "Бот запущен и готов к работе!", 200
+    return "Статус: OK", 200
+
+@app.route('/ping')
+def ping():
+    return "PONG! Я живой!", 200
 
 @app.route('/' + (BOT_TOKEN or ''), methods=['POST'])
 def webhook():
-    # Telegram прислал обновление
     update_data = request.get_json(force=True)
     update = Update.de_json(update_data, application.bot)
-    
-    # ПЕРЕДАЕМ ОБРАБОТКУ В ОСНОВНОЙ ПОТОК БОТА
-    if loop and application:
-        loop.call_soon_threadsafe(asyncio.create_task, application.process_update(update))
-    
+    # Передаем в цикл бота
+    loop.call_soon_threadsafe(asyncio.create_task, application.process_update(update))
     return 'OK', 200
 
 def run_flask():
-    # Запуск Flask в отдельном потоке, чтобы он не блокировал бота
-    logger.info(f"Запуск Flask на порту {PORT}")
-    app.run(host='0.0.0.0', port=PORT)
+    # Используем debug=False для продакшена на Render
+    logger.info(f"Flask стартует на порту {PORT}")
+    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
 
 async def start_bot():
     global application, loop
