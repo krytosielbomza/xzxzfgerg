@@ -224,6 +224,10 @@ async def remove_points_command(update: Update, context: ContextTypes.DEFAULT_TY
 app = Flask(__name__)
 application = None
 
+@app.route('/ping')
+def ping():
+    return "I am alive!", 200
+
 @app.route('/' + (BOT_TOKEN or ''), methods=['POST'])
 async def webhook():
     update = Update.de_json(request.get_json(), application.bot)
