@@ -200,24 +200,42 @@ async def remove_points_command(update: Update, context: ContextTypes.DEFAULT_TY
     except:
         await update.message.reply_text("Ошибка. Юзай: /remove_points ID ОЧКИ")
 
-# --- SERVER & LAUNCH ---
+
+import threading
+
 app = Flask(__name__)
 application = None
+loop = None
 
 @app.route('/')
-def index(): return "Бот работает", 200
+def index():
+    return "Бот запущен и готов к работе!", 200
 
 @app.route('/' + (BOT_TOKEN or ''), methods=['POST'])
-async def webhook():
-    update = Update.de_json(request.get_json(force=True), application.bot)
-    # Используем create_task, чтобы не блокировать ответ Telegram серверу
-    asyncio.create_task(application.process_update(update))
+def webhook():
+    # Telegram прислал обновление
+    update_data = request.get_json(force=True)
+    update = Update.de_json(update_data, application.bot)
+    
+    # ПЕРЕДАЕМ ОБРАБОТКУ В ОСНОВНОЙ ПОТОК БОТА
+    if loop and application:
+        loop.call_soon_threadsafe(asyncio.create_task, application.process_update(update))
+    
     return 'OK', 200
 
+def run_flask():
+    # Запуск Flask в отдельном потоке, чтобы он не блокировал бота
+    logger.info(f"Запуск Flask на порту {PORT}")
+    app.run(host='0.0.0.0', port=PORT)
+
 async def start_bot():
-    global application
+    global application, loop
+    loop = asyncio.get_running_loop()
+    
+    # Инициализация бота
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     
+    # Регистрация обработчиков
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("add_points", add_points))         
     application.add_handler(CommandHandler("remove_points", remove_points_command)) 
@@ -230,23 +248,32 @@ async def start_bot():
     await application.start()
 
     if WEBHOOK_URL:
+        # Настройка вебхука
         url = WEBHOOK_URL.replace("http://", "https://").rstrip('/')
-        await application.bot.set_webhook(f"{url}/{BOT_TOKEN}", drop_pending_updates=True)
-        logger.info(f"Вебхук запущен на {url}")
+        await application.bot.set_webhook(url=f"{url}/{BOT_TOKEN}", drop_pending_updates=True)
+        logger.info(f"✅ Вебхук установлен: {url}/{BOT_TOKEN}")
         
-        # Правильный запуск Flask сервера внутри asyncio
-        from werkzeug.serving import run_simple
-        # Это позволит Flask работать в асинхронной среде Render
-        run_simple('0.0.0.0', PORT, app, use_reloader=False)
+        # ЗАПУСКАЕМ ВЕБ-СЕРВЕР В ФОНЕ
+        flask_thread = threading.Thread(target=run_flask, daemon=True)
+        flask_thread.start()
+        
+        # Бот должен продолжать работать в основном потоке
+        while True:
+            await asyncio.sleep(3600)
     else:
+        # Локальный запуск через Polling
+        logger.info("✅ Запуск в режиме Polling")
         await application.updater.start_polling()
-        logger.info("Polling запущен")
-        while True: await asyncio.sleep(1)
+        while True:
+            await asyncio.sleep(1)
 
 if __name__ == '__main__':
+    # Создаем папку для временных файлов, если её нет
+    os.makedirs("temp", exist_ok=True)
+    
     try:
         asyncio.run(start_bot())
     except (KeyboardInterrupt, SystemExit):
-        pass
+        logger.info("Бот остановлен")
     except Exception as e:
-        logger.error(f"Критическая ошибка: {e}")
+        logger.error(f"Критическая ошибка: {e}", exc_info=True)
