@@ -1,497 +1,262 @@
+import os
+import asyncio
+import logging
+import random
+import sqlite3
+import re
+from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, ContextTypes,
     CallbackQueryHandler, MessageHandler, filters
 )
 from dotenv import load_dotenv
-import random
-import re
-import sqlite3  # Исправлено: было sqlite3 (опечатка)
-import os
-from flask import Flask, request
-import asyncio
 from PIL import Image, ImageDraw, ImageFont
-import threading
+
+# Настройка логирования
+logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+PORT = int(os.getenv('PORT', 10000))
 ADMIN_ID = 7770044439
 
-HIT_REACTIONS = [
-    "🤛 ударил",
-    "👊 дал леща",
-    "💥 стукнул",
-    "👋 дал пощёчину",
-    "🥊 нанёс удар"
-]
-
-async def handle_hit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message_text = update.message.text
-
-    # Проверяем, начинается ли сообщение со слова «ударить» (регистронезависимо)
-    if not message_text or not message_text.lower().startswith('ударить'):
-        return  # Не наша команда — выходим
-
-    attacker_name = update.effective_user.first_name
-
-    # Сценарий 1: ответ на сообщение
-    if update.message.reply_to_message:
-        target_user = update.message.reply_to_message.from_user
-        target_name = target_user.first_name
-        reaction = random.choice(HIT_REACTIONS)
-        response = f"{attacker_name} {reaction} {target_name}!"
-        await update.message.reply_text(response)
-
-    # Сценарий 2: username в тексте
-    else:
-        words = message_text.split()
-        username = None
-
-        # Ищем @username после слова «ударить»
-        for word in words[1:]:
-            if word.startswith('@'):
-                username = word.lstrip('@')
-                break
-
-        if username:
-            reaction = random.choice(HIT_REACTIONS)
-            response = f"{attacker_name} {reaction} пользователя @{username}!"
-            await update.message.reply_text(response)
-        else:
-            # Сценарий 3: неправильное использование
-            await update.message.reply_text(
-                "Использование:\n"
-                "• Ответьте на сообщение и напишите «ударить»\n"
-                "• Или напишите «ударить @username»"
-            )
-
-async def handle_134(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_message = update.message.text
-    if user_message == '134':
-        await update.message.reply_text('код 134 запущен.')
-
+# --- БАЗА ДАННЫХ ---
 class Database:
     def __init__(self, db_path="bot.db"):
         self.db_path = db_path
-        self.init_db()
-
-    def init_db(self):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER UNIQUE,
-                name TEXT,
-                score INTEGER DEFAULT 0
-            )
-        ''')
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute('''CREATE TABLE IF NOT EXISTS users 
+                           (user_id INTEGER PRIMARY KEY, name TEXT, score INTEGER DEFAULT 0)''')
 
     def update_score(self, user_id, name, points):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+        with sqlite3.connect(self.db_path) as conn:
+            # Сначала пробуем обновить, если не вышло — вставляем. 
+            # Это надежнее для старых версий sqlite без ON CONFLICT.
+            cursor = conn.cursor()
+            cursor.execute("UPDATE users SET score = score + ?, name = ? WHERE user_id = ?", (points, name, user_id))
+            if cursor.rowcount == 0:
+                cursor.execute("INSERT INTO users (user_id, name, score) VALUES (?, ?, ?)", (user_id, name, points))
+            conn.commit()
 
-        cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-        result = cursor.fetchone()
-
-        if result:
-            cursor.execute("UPDATE users SET score = score + ?, name = ? WHERE user_id = ?",
-                         (points, name, user_id))
-        else:
-            cursor.execute("INSERT INTO users (user_id, name, score) VALUES (?, ?, ?)",
-                         (user_id, name, points))
-
-        conn.commit()
-        conn.close()
-
-    def get_top_players(self, limit=5):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT name, score FROM users ORDER BY score DESC LIMIT ?", (limit,))
-        top = cursor.fetchall()
-        conn.close()
-        return top
 
     def remove_points(self, user_id, points):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT score FROM users WHERE user_id = ?", (user_id,))
-        result = cursor.fetchone()
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT score FROM users WHERE user_id = ?", (user_id,))
+            res = cursor.fetchone()
+            if not res: 
+                return False, "Пользователь не найден в базе."
+            
+            new_score = max(0, res[0] - points)
+            cursor.execute("UPDATE users SET score = ? WHERE user_id = ?", (new_score, user_id))
+            conn.commit()
+            return True, f"Очки удалены. Было: {res[0]}, стало: {new_score}"
 
-        if not result:
-            conn.close()
-            return False, "Пользователь не найден"
+    def get_top(self):
+        with sqlite3.connect(self.db_path) as conn:
+            return conn.execute("SELECT name, score FROM users ORDER BY score DESC LIMIT 5").fetchall()
 
-        current_score = result[0]
-        new_score = max(0, current_score - points)
-
-        cursor.execute("UPDATE users SET score = ? WHERE user_id = ?", (new_score, user_id))
-        conn.commit()
-        conn.close()
-        return True, f"Удалено {points} очков. Было: {current_score}, стало: {new_score}"
-
-    def clear_points(self, user_id):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("UPDATE users SET score = 0 WHERE user_id = ?", (user_id,))
-        affected = cursor.rowcount
-        conn.commit()
-        conn.close()
-        if affected > 0:
-            return True, "Очки сброшены до 0"
-        else:
-            return False, "Пользователь не найден"
-
-# Инициализация базы данных
 db = Database()
 
-questions = [
-    {
-        "question": "сосал?",
-        "options": ["да", "нет", "сосал"],
-        "answer": "нет"
-    },
-    {
-        "question": "натурал?",
-        "options": ["да", "нет", "не натурал"],
-        "answer": "да"
-    }
+# --- ДАННЫЕ ВИКТОРИНЫ ---
+QUESTIONS = [
+    {"q": "сосал?", "opts": ["да", "нет", "сосал"], "a": "нет"},
+    {"q": "натурал?", "opts": ["да", "нет", "не натурал"], "a": "да"}
 ]
 
-async def add_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("У вас нет прав для этой команды.")
-        return
-
-    if len(context.args) != 2:
-        await update.message.reply_text("Использование: /add_points <user_id> <points>")
-        return
-
-    try:
-        user_id = int(context.args[0])
-        points = int(context.args[1])
-
-        # Получаем реальное имя пользователя из Telegram
-        user = await context.bot.get_chat(user_id)
-        user_name = user.first_name or user.username or f"User_{user_id}"
-
-        db.update_score(user_id, user_name, points)
-        await update.message.reply_text(f"Добавлено {points} очков пользователю {user_name}.")
-    except ValueError:
-        await update.message.reply_text("Ошибка: user_id и points должны быть числами.")
-    except Exception as e:
-        await update.message.reply_text(f"Ошибка при получении информации о пользователе: {e}")
-
-async def remove_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("У вас нет прав для этой команды.")
-        return
-
-    if len(context.args) != 2:
-        await update.message.reply_text("Использование: /remove_points <user_id> <points>")
-        return
-
-    try:
-        user_id = int(context.args[0])
-        points = int(context.args[1])
-
-        if points <= 0:
-            await update.message.reply_text("Количество очков должно быть положительным числом.")
-            return
-
-        success, message = db.remove_points(user_id, points)
-        await update.message.reply_text(message)
-    except ValueError:
-        await update.message.reply_text("Ошибка: user_id и points должны быть числами.")
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Привет! Я бот нарикнат")
-
-async def help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "Я могу:\n"
-        "/start - поздороваться\n"
-        "/naheridi - послать нахер\n"
-        "Умри"
-    )
-    await update.message.reply_text(text)
-
-async def top(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    top_players = db.get_top_players()
-
-
-    if not top_players:
-        await update.message.reply_text("пока что все лошки")
-        return
-    
-    text = "топ алкашей:\n\n"
-    for i, (name, score) in enumerate(top_players, start=1):
-        text += f"{i}. {name} - {score} очков\n"
-    await update.message.reply_text(text)
-
-async def naheridi(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("иди нахер")
-
-
-async def start_quiz_from_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = random.choice(questions)
-    context.user_data["correct_answer"] = q["answer"]
-    context.user_data["current_question"] = q["question"]
-
-    buttons = [
-        InlineKeyboardButton(opt, callback_data=f"answer_{opt}")
-        for opt in q["options"]
-    ]
-    markup = InlineKeyboardMarkup.from_column(buttons)
-    await update.message.reply_text(q["question"], reply_markup=markup)
-
-async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text.lower()
-    if "умри" in user_text:
-        await update.message.reply_text("не")
-    else:
-        await update.message.reply_text(user_text)
-
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("wait_for_photo"):
-        return
-
-    # Сбрасываем флаг ожидания фото сразу
-    context.user_data["wait_for_photo"] = False
-
-    photo = update.message.photo[-1]
-    file = await photo.get_file()
-
-    os.makedirs("temp", exist_ok=True)
-
-    # Используем фиксированное имя файла для фото
-    image_path = "temp/meme.jpg"
-
-    try:
-        await file.download_to_drive(image_path)
-        # Сохраняем путь к изображению в user_data
-        context.user_data["image_path"] = image_path
-        context.user_data["wait_for_text"] = True
-        await update.message.reply_text("напиши говно какое-то")
-    except Exception as e:
-        await update.message.reply_text(f"Ошибка при сохранении фото: {e}")
-        # Сбрасываем все флаги при ошибке
-        context.user_data.pop("wait_for_text", None)
-        context.user_data.pop("image_path", None)
-
-
-async def handle_meme_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("wait_for_text"):
-        return
-
-    text = update.message.text
-    image_path = context.user_data.get("image_path")
-
-    if not image_path or not os.path.exists(image_path):
-        await update.message.reply_text("❌ Ошибка: изображение не найдено. Начните заново.")
-        context.user_data.pop("wait_for_text", None)
-        context.user_data.pop("image_path", None)
-        return
-
-    output_path = "temp/final_meme.jpg"
-
-    try:
-        img = Image.open(image_path)
+# --- ЛОГИКА ОТРИСОВКИ МЕМА ---
+def create_meme(image_path, text, output_path):
+    with Image.open(image_path) as img:
+        img = img.convert("RGB")
         draw = ImageDraw.Draw(img)
-        width, height = img.size
+        w, h = img.size
+        fs = int(h * 0.1)
+        try: font = ImageFont.truetype("arial.ttf", fs)
+        except: font = ImageFont.load_default()
 
-        # Пробуем загрузить шрифт
-        font_path = "font/arial.ttf"
-        try:
-            # Начинаем с большого размера шрифта
-            font_size = 100
-            font = ImageFont.truetype(font_path, size=font_size)
-        except:
-            font = ImageFont.load_default()
-            font_size = 40
+        bbox = draw.textbbox((0, 0), text, font=font)
+        tx, ty = (w - (bbox[2]-bbox[0])) / 2, h - (bbox[3]-bbox[1]) - 50
+        draw.text((tx, ty), text, font=font, fill="white", stroke_width=3, stroke_fill="black")
+        img.save(output_path, "JPEG")
 
-        # Параметры текста
-        margin = 50
-        max_text_width = width - 2 * margin
-        max_text_height = height // 4  # Отводим четверть высоты под текст
-
-        # Подбираем размер шрифта, чтобы текст поместился
-        while font_size > 10:
-            try:
-                # Получаем размеры текста с текущим шрифтом
-                text_bbox = draw.textbbox((0, 0), text, font=font)
-                text_width = text_bbox[2] - text_bbox[0]
-                text_height = text_bbox[3] - text_bbox[1]
-
-                if text_width <= max_text_width and text_height <= max_text_height:
-                    break  # Текст помещается — выходим из цикла
-
-                font_size -= 5
-                font = ImageFont.truetype(font_path, size=font_size)
-            except:
-                font_size -= 5
-
-        # Позиция текста — внизу с отступом
-        text_position = (margin, height - margin - max_text_height)
-
-        # Обводка текста (чёрный контур)
-        outline_range = max(1, font_size // 20)  # Толщина обводки зависит от размера шрифта
-        for dx in range(-outline_range, outline_range + 1):
-            for dy in range(-outline_range, outline_range + 1):
-                draw.text((text_position[0] + dx, text_position[1] + dy), text, font=font, fill="black")
-
-        # Основной текст (белый)
-        draw.text(text_position, text, font=font, fill="white")
-
-        img.save(output_path)
-
-        with open(output_path, "rb") as photo_file:
-            await update.message.reply_photo(photo=photo_file)
-
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка при создании мема: {e}")
-    finally:
-        # Сбрасываем флаги
-        context.user_data.pop("wait_for_text", None)
-        context.user_data.pop("image_path", None)
-
-
-        # Удаляем временные файлы
-        for temp_file in [image_path, output_path]:
-            if os.path.exists(temp_file):
-                try:
-                    os.remove(temp_file)
-                except Exception as del_error:
-                    await update.message.reply_text(f"⚠️ Не удалось удалить временный файл {temp_file}: {del_error}")
-
-async def send_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    q = random.choice(questions)
-    context.user_data["correct_answer"] = q["answer"]
-    context.user_data["current_question"] = q["question"]
-
-
-    buttons = [
-        InlineKeyboardButton(opt, callback_data=f"answer_{opt}")
-        for opt in q["options"]
+# --- ОБРАБОТЧИКИ ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kbd = [
+        [InlineKeyboardButton("Создать мэрин", callback_data="create_marina")],
+        [InlineKeyboardButton("Топ алкашей", callback_data="top"), InlineKeyboardButton("Викторина", callback_data="quiz")],
+        [InlineKeyboardButton("Пойти нахер", callback_data="naherpoyti")]
     ]
-    markup = InlineKeyboardMarkup.from_column(buttons)
-    await query.edit_message_text(q["question"], reply_markup=markup)
-
-async def check_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    data = query.data
-    if data.startswith("answer_"):
-        selected = data.replace("answer_", "")
-        correct = context.user_data.get("correct_answer")
-        question = context.user_data.get("current_question")
-
-        context.user_data.pop("correct_answer", None)
-        context.user_data.pop("current_question", None)
-
-        if selected == correct:
-            user_id = query.from_user.id
-            name = query.from_user.first_name
-            db.update_score(user_id, name, 10)
-            await query.edit_message_text(
-                 f"Вопрос был: {question}\n"
-            f"Ты выбрал: {selected}. бааалин.\n"
-            f"+10 очков!"
-        )
-    else:
-        await query.edit_message_text(
-            f"вопрос был: {question}\n"
-            f"ты выбрал: {selected}, а надо было: {correct}. опозорен"
-        )
+    await update.message.reply_text("Привет! Я бот нарикнат. Выбирай кнопку или пиши команды.", 
+                                   reply_markup=InlineKeyboardMarkup(kbd))
 
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    data = query.data
-
-
-    if data == "naherpoyti":
-        await query.edit_message_text("иди нахер мразота")
-    elif data == "create_marina":
-        await query.edit_message_text("скинь писюн")
+    
+    if query.data == "create_marina":
         context.user_data["wait_for_photo"] = True
-    elif data == "quiz":
-        await send_quiz(update, context)
-    elif data == "top":
-        top_players = db.get_top_players()
-        if not top_players:
-            await query.edit_message_text("пока что вы все лошки")
-            return
-        text = "топ алкашей:\n\n"
-        for i, (name, score) in enumerate(top_players, start=1):
-            text += f"{i}. {name} - {score} очков\n"
+        await query.edit_message_text("Скинь писюн (фото для мема)")
+    
+    elif query.data == "top":
+        top = db.get_top()
+        text = "Топ алкашей:\n\n" + "\n".join([f"{i+1}. {n} - {s}" for i, (n, s) in enumerate(top)]) if top else "Все лошки"
         await query.edit_message_text(text)
-    elif data.startswith("answer_"):
-        await check_answer(update, context)
+
+    elif query.data == "naherpoyti":
+        await query.edit_message_text("иди нахер мразота")
+
+    elif query.data == "quiz":
+        q = random.choice(QUESTIONS)
+        context.user_data.update({"correct": q["a"], "q_text": q["q"]})
+        btns = [[InlineKeyboardButton(o, callback_data=f"ans_{o}")] for o in q["opts"]]
+        await query.edit_message_text(q["q"], reply_markup=InlineKeyboardMarkup(btns))
+
+    elif query.data.startswith("ans_"):
+        selected = query.data.replace("ans_", "")
+        correct = context.user_data.get("correct")
+        if selected == correct:
+            db.update_score(query.from_user.id, query.from_user.first_name, 10)
+            await query.edit_message_text(f"Правильно! +10 очков. Ты не опозорен.")
+        else:
+            await query.edit_message_text(f"Неверно! Правильный ответ: {correct}. Опозорен.")
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ud = context.user_data
+    text = update.message.text or ""
+    chat_type = update.effective_chat.type  # Получаем тип чата
+
+    # 1. Состояние создания мема (работает везде, если начато)
+    if ud.get("wait_for_text"):
+        out = f"temp/out_{update.effective_user.id}.jpg"
+        create_meme(ud["image_path"], text, out)
+        with open(out, "rb") as f:
+            await update.message.reply_photo(f, caption="Мэрин готов")
+        if os.path.exists(ud["image_path"]): os.remove(ud["image_path"])
+        if os.path.exists(out): os.remove(out)
+        ud.clear()
+        return
+
+    # 2. Обработка команд и реакций
+    low_text = text.lower()
+    
+    # Команда "ударить" (работает везде)
+    if low_text.startswith("ударить"):
+        attacker = update.effective_user.first_name
+        target = "кого-то"
+        if update.message.reply_to_message:
+            target = update.message.reply_to_message.from_user.first_name
+        else:
+            match = re.search(r'@(\w+)', text)
+            if match: target = f"@{match.group(1)}"
+        
+        rx = random.choice(["🤛 ударил", "👊 дал леща", "💥 стукнул", "👋 дал пощёчину"])
+        await update.message.reply_text(f"{attacker} {rx} {target}!")
+        return
+
+    # Реакция на "134" (работает везде)
+    elif low_text == "134":
+        await update.message.reply_text("код 134 запущен.")
+        return
+
+    # Реакция на "умри" (работает везде)
+    elif "умри" in low_text:
+        await update.message.reply_text("не")
+        return
+
+    # 3. ФУНКЦИЯ ЭХО (только для личных сообщений)
+    if chat_type == "private":
+        await update.message.reply_text(text.lower())
+    else:
+        # В группах просто ничего не делаем, если это не команда выше
+        pass
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get("wait_for_photo"):
+        os.makedirs("temp", exist_ok=True)
+        f = await update.message.photo[-1].get_file()
+        path = f"temp/in_{update.effective_user.id}.jpg"
+        await f.download_to_drive(path)
+        context.user_data.update({"image_path": path, "wait_for_photo": False, "wait_for_text": True})
+        await update.message.reply_text("Картинку принял. Пиши текст говна!")
+
+# --- АДМИН-КОМАНДЫ ---
+async def add_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("Ты не админ, гуляй.")
+        return
+    
+    try:
+        # Формат: /add_points 1234567 10
+        user_id = int(context.args[0])
+        points = int(context.args[1])
+        
+        # Пытаемся узнать имя пользователя через бота
+        try:
+            chat = await context.bot.get_chat(user_id)
+            name = chat.first_name or f"User_{user_id}"
+        except:
+            name = f"User_{user_id}"
+
+        db.update_score(user_id, name, points)
+        await update.message.reply_text(f"✅ насрано {points} очков пользователю {name} (ID: {user_id})")
+    except (IndexError, ValueError):
+        await update.message.reply_text("⚠️ нарик! пиши так: `/add_points ID ОЧКИ`", parse_mode="Markdown")
 
 
-# Flask-приложение для webhooks
+async def remove_points_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("Не положено.")
+        return
+    
+    try:
+        user_id = int(context.args[0])
+        points = int(context.args[1])
+        
+        success, message = db.remove_points(user_id, points)
+        await update.message.reply_text(f"{'✅' if success else '❌'} {message}")
+    except (IndexError, ValueError):
+        await update.message.reply_text("⚠️ нарик! пиши так: `/remove_points ID ОЧКИ`", parse_mode="Markdown")
+
+# --- SERVER & LAUNCH ---
 app = Flask(__name__)
+application = None
 
-@app.route(f'/{BOT_TOKEN}', methods=['POST'])
+@app.route('/' + (BOT_TOKEN or ''), methods=['POST'])
 async def webhook():
     update = Update.de_json(request.get_json(), application.bot)
     await application.process_update(update)
-    return 'ok'
+    return 'OK', 200
 
-@app.route('/')
-def index():
-    return 'Bot is running'
-
-async def set_webhook():
-    # Получаем URL от Render (переменная окружения)
-    webhook_url = os.getenv("WEBHOOK_URL")
-    if not webhook_url:
-        raise ValueError("WEBHOOK_URL не установлен в переменных окружения")
-
-    full_url = f"{webhook_url}/{BOT_TOKEN}"
-    await application.bot.set_webhook(full_url)
-    print(f"Webhook установлен на: {full_url}")
-
-async def main():
+async def start_bot():
     global application
     application = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    # Добавляем обработчики
+    
+    # Регистрация команд
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help))
-    application.add_handler(CommandHandler("top", top))
-    application.add_handler(CommandHandler("naheridi", naheridi))
-    application.add_handler(CommandHandler("add_points", add_points))
-    application.add_handler(CommandHandler("remove_points", remove_points))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
-    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    application.add_handler(CommandHandler("add_points", add_points))         
+    application.add_handler(CommandHandler("remove_points", remove_points_command)) 
+    application.add_handler(CommandHandler("top", lambda u, c: handle_buttons(u, c)))
+    
     application.add_handler(CallbackQueryHandler(handle_buttons))
-    application.add_handler(MessageHandler(filters.Regex(r'^134$'), handle_134))
-    application.add_handler(MessageHandler(filters.Regex(r'^ударить'), handle_hit))
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Устанавливаем webhook
-    await set_webhook()
-
-    # Запускаем Flask в отдельном потоке
-    flask_thread = threading.Thread(target=app.run, kwargs={
-        'host': '0.0.0.0.0',
-        'port': int(os.getenv('PORT', 10000)),
-        'debug': False,
-        'use_reloader': False
-    })
-    flask_thread.daemon = True
-    flask_thread.start()
-
-    # Бот будет работать через webhooks, polling не нужен
-    print("Бот запущен в режиме webhooks")
+    if WEBHOOK_URL:
+        url = WEBHOOK_URL.replace("http://", "https://")
+        await application.bot.set_webhook(f"{url}/{BOT_TOKEN}")
+        await application.initialize()
+        await application.start()
+        app.run(host='0.0.0.0', port=PORT)
+    else:
+        async with application:
+            await application.initialize()
+            await application.start()
+            await application.updater.start_polling()
+            while True: await asyncio.sleep(1)
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try: asyncio.run(start_bot())
+    except: pass
