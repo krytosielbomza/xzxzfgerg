@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: telegram-bot
+    region: oregon
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python bot.py"
+    environment:
+      - key: BOT_TOKEN
+        fromSecret: bot-token
+      - key: WEBHOOK_URL
+        value: "https://myboobobt.onrender.com"
+      - key: PORT
+        value: "10000"
+    envVarSecrets:
+      - bot-token
