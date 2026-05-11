@@ -483,7 +483,7 @@ async def main():
     # Запускаем Flask в отдельном потоке
     flask_thread = threading.Thread(target=app.run, kwargs={
         'host': '0.0.0.0.0',
-        'port': int(os.getenv('PORT', 5000)),
+        'port': int(os.getenv('PORT', 10000)),
         'debug': False,
         'use_reloader': False
     })
