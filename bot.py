@@ -241,33 +241,46 @@ async def webhook():
 
 async def start_bot():
     global application
+    # Инициализация приложения бота
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     
-    # Регистрация команд
+    # Регистрация всех обработчиков
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("add_points", add_points))         
     application.add_handler(CommandHandler("remove_points", remove_points_command)) 
     application.add_handler(CommandHandler("top", lambda u, c: handle_buttons(u, c)))
-    
     application.add_handler(CallbackQueryHandler(handle_buttons))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     if WEBHOOK_URL:
-        url = WEBHOOK_URL.replace("http://", "https://")
-        await application.bot.delete_webhook(drop_pending_updates=True) # Добавь это!
-        await application.bot.set_webhook(f"{url}/{BOT_TOKEN}")
-        url = WEBHOOK_URL.replace("http://", "https://")
-        await application.bot.set_webhook(f"{url}/{BOT_TOKEN}")
+        # Подготовка URL вебхука
+        base_url = WEBHOOK_URL.replace("http://", "https://").rstrip('/')
+        webhook_path = f"/{BOT_TOKEN}"
+        full_webhook_url = f"{base_url}{webhook_path}"
+        
+        # Важно: Сначала инициализируем внутренние компоненты бота
         await application.initialize()
         await application.start()
+        
+        # Устанавливаем вебхук (один раз!)
+        await application.bot.delete_webhook(drop_pending_updates=True)
+        await application.bot.set_webhook(url=full_webhook_url)
+        
+        logger.info(f"Вебхук установлен на: {full_webhook_url}")
+        
+        # Запуск Flask сервера (это заблокирует дальнейшее выполнение, что нам и нужно)
+        # Используем встроенный порт Render
         app.run(host='0.0.0.0', port=PORT)
     else:
+        # Локальный режим (Polling)
         async with application:
             await application.initialize()
             await application.start()
             await application.updater.start_polling()
-            while True: await asyncio.sleep(1)
+            logger.info("Бот запущен в режиме Polling")
+            while True:
+                await asyncio.sleep(1)
 
 if __name__ == '__main__':
     try: asyncio.run(start_bot())
