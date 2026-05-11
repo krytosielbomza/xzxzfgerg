@@ -224,12 +224,17 @@ async def remove_points_command(update: Update, context: ContextTypes.DEFAULT_TY
 app = Flask(__name__)
 application = None
 
+@app.route('/')
+def index():
+    return "OK", 200
+
 @app.route('/ping')
 def ping():
     return "I am alive!", 200
 
 @app.route('/' + (BOT_TOKEN or ''), methods=['POST'])
 async def webhook():
+    print("ЗАПРОС ПОЛУЧЕН!")
     update = Update.de_json(request.get_json(), application.bot)
     await application.process_update(update)
     return 'OK', 200
@@ -249,6 +254,9 @@ async def start_bot():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     if WEBHOOK_URL:
+        url = WEBHOOK_URL.replace("http://", "https://")
+        await application.bot.delete_webhook(drop_pending_updates=True) # Добавь это!
+        await application.bot.set_webhook(f"{url}/{BOT_TOKEN}")
         url = WEBHOOK_URL.replace("http://", "https://")
         await application.bot.set_webhook(f"{url}/{BOT_TOKEN}")
         await application.initialize()
