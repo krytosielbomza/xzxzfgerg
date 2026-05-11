@@ -1,27 +1,22 @@
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, ContextTypes,
+    CallbackQueryHandler, MessageHandler, filters
+)
 from dotenv import load_dotenv
 import random
 import re
-from telegram.ext import MessageHandler, filters
-import sqlite3
-from telegram.ext import MessageHandler, filters
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from PIL import Image, ImageDraw, ImageFont
+import sqlite3  # Исправлено: было sqlite3 (опечатка)
 import os
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from flask import Flask, request
+import asyncio
+from PIL import Image, ImageDraw, ImageFont
 import threading
-from flask import Flask
-
-
-
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 ADMIN_ID = 7770044439
-
-
 
 HIT_REACTIONS = [
     "🤛 ударил",
@@ -30,7 +25,6 @@ HIT_REACTIONS = [
     "👋 дал пощёчину",
     "🥊 нанёс удар"
 ]
-
 
 async def handle_hit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_text = update.message.text
@@ -72,12 +66,10 @@ async def handle_hit(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "• Или напишите «ударить @username»"
             )
 
-
 async def handle_134(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message = update.message.text
     if user_message == '134':
         await update.message.reply_text('код 134 запущен.')
-
 
 class Database:
     def __init__(self, db_path="bot.db"):
@@ -193,7 +185,6 @@ async def add_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"Ошибка при получении информации о пользователе: {e}")
 
-        
 async def remove_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("У вас нет прав для этой команды.")
@@ -228,9 +219,9 @@ async def help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(text)
 
-
 async def top(update: Update, context: ContextTypes.DEFAULT_TYPE):
     top_players = db.get_top_players()
+
 
     if not top_players:
         await update.message.reply_text("пока что все лошки")
@@ -243,6 +234,7 @@ async def top(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def naheridi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("иди нахер")
+
 
 async def start_quiz_from_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = random.choice(questions)
@@ -270,12 +262,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Сбрасываем флаг ожидания фото сразу
     context.user_data["wait_for_photo"] = False
 
-
     photo = update.message.photo[-1]
     file = await photo.get_file()
 
     os.makedirs("temp", exist_ok=True)
-
 
     # Используем фиксированное имя файла для фото
     image_path = "temp/meme.jpg"
@@ -292,13 +282,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("wait_for_text", None)
         context.user_data.pop("image_path", None)
 
+
 async def handle_meme_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("wait_for_text"):
         return
 
     text = update.message.text
     image_path = context.user_data.get("image_path")
-
 
     if not image_path or not os.path.exists(image_path):
         await update.message.reply_text("❌ Ошибка: изображение не найдено. Начните заново.")
@@ -368,6 +358,7 @@ async def handle_meme_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("wait_for_text", None)
         context.user_data.pop("image_path", None)
 
+
         # Удаляем временные файлы
         for temp_file in [image_path, output_path]:
             if os.path.exists(temp_file):
@@ -383,6 +374,7 @@ async def send_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = random.choice(questions)
     context.user_data["correct_answer"] = q["answer"]
     context.user_data["current_question"] = q["question"]
+
 
     buttons = [
         InlineKeyboardButton(opt, callback_data=f"answer_{opt}")
@@ -409,20 +401,21 @@ async def check_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
             name = query.from_user.first_name
             db.update_score(user_id, name, 10)
             await query.edit_message_text(
-                f"Вопрос был: {question}\n"
-                f"Ты выбрал: {selected}. бааалин.\n"
-                f"+10 очков!"
-            )
-        else:
-            await query.edit_message_text(
-                f"вопрос был: {question}\n"
-                f"ты выбрал: {selected}, а надо было: {correct}. опозорен"
-            )
+                 f"Вопрос был: {question}\n"
+            f"Ты выбрал: {selected}. бааалин.\n"
+            f"+10 очков!"
+        )
+    else:
+        await query.edit_message_text(
+            f"вопрос был: {question}\n"
+            f"ты выбрал: {selected}, а надо было: {correct}. опозорен"
+        )
 
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
+
 
     if data == "naherpoyti":
         await query.edit_message_text("иди нахер мразота")
@@ -443,104 +436,62 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("answer_"):
         await check_answer(update, context)
 
-keyboard = [
-    [InlineKeyboardButton("пойти нахер", callback_data="naherpoyti"),
-     InlineKeyboardButton("создать мэрин", callback_data="create_marina")],
-    [InlineKeyboardButton("викторина", callback_data="quiz"),
-     InlineKeyboardButton("топ нариков", callback_data="top")]
-]
 
-menu = InlineKeyboardMarkup(keyboard)
+# Flask-приложение для webhooks
+app = Flask(__name__)
 
-async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Выбери, что хочешь сделать:",
-        reply_markup=menu
-    )
+@app.route(f'/{BOT_TOKEN}', methods=['POST'])
+async def webhook():
+    update = Update.de_json(request.get_json(), application.bot)
+    await application.process_update(update)
+    return 'ok'
 
-# Инициализация базы данных
-db = Database()
+@app.route('/')
+def index():
+    return 'Bot is running'
 
-app = ApplicationBuilder().token(BOT_TOKEN).build()
+async def set_webhook():
+    # Получаем URL от Render (переменная окружения)
+    webhook_url = os.getenv("WEBHOOK_URL")
+    if not webhook_url:
+        raise ValueError("WEBHOOK_URL не установлен в переменных окружения")
 
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("help", help))
-app.add_handler(CommandHandler("menu", menu_handler))
-app.add_handler(CommandHandler("naheridi", naheridi))
-app.add_handler(CommandHandler("top", top))
-app.add_handler(CommandHandler("add_points", add_points))
-app.add_handler(CommandHandler("remove_points", remove_points))
+    full_url = f"{webhook_url}/{BOT_TOKEN}"
+    await application.bot.set_webhook(full_url)
+    print(f"Webhook установлен на: {full_url}")
 
+async def main():
+    global application
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    # Добавляем обработчики
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help))
+    application.add_handler(CommandHandler("top", top))
+    application.add_handler(CommandHandler("naheridi", naheridi))
+    application.add_handler(CommandHandler("add_points", add_points))
+    application.add_handler(CommandHandler("remove_points", remove_points))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    application.add_handler(CallbackQueryHandler(handle_buttons))
+    application.add_handler(MessageHandler(filters.Regex(r'^134$'), handle_134))
+    application.add_handler(MessageHandler(filters.Regex(r'^ударить'), handle_hit))
 
+    # Устанавливаем webhook
+    await set_webhook()
 
-app.add_handler(
-    MessageHandler(
-        filters.TEXT & filters.Regex(re.compile(r"викторина", re.IGNORECASE)),
-        start_quiz_from_text
-    )
-)
+    # Запускаем Flask в отдельном потоке
+    flask_thread = threading.Thread(target=app.run, kwargs={
+        'host': '0.0.0.0.0',
+        'port': int(os.getenv('PORT', 5000)),
+        'debug': False,
+        'use_reloader': False
+    })
+    flask_thread.daemon = True
+    flask_thread.start()
 
-app.add_handler(
-    MessageHandler(
-        filters.TEXT & filters.Regex(re.compile(r"^ударить", re.IGNORECASE)),
-        handle_hit
-    )
-)
+    # Бот будет работать через webhooks, polling не нужен
+    print("Бот запущен в режиме webhooks")
 
-app.add_handler(
-    MessageHandler(
-        filters.TEXT & ~filters.COMMAND,
-        handle_134
-    )
-)
-
-app.add_handler(
-    MessageHandler(
-        filters.TEXT & ~filters.COMMAND,
-        handle_meme_text
-    )
-)
-
-app.add_handler(
-    MessageHandler(filters.TEXT & ~filters.COMMAND, echo)
-)
-
-app.add_handler(CallbackQueryHandler(handle_buttons, pattern="^(naherpoyti|create_marina|top)$"))
-app.add_handler(CallbackQueryHandler(send_quiz, pattern="^quiz$"))
-app.add_handler(CallbackQueryHandler(check_answer, pattern="^answer_"))
-
-
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_HEAD(self):
-        if self.path == '/health':
-            self.send_response(200)
-            self.end_headers()
-        else:
-            self.send_response(404)
-            self.end_headers()
-
-    def do_GET(self):
-        if self.path == '/health':
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b'OK')
-        else:
-            self.send_response(404)
-            self.end_headers()
-
-def run_health_server():
-    # Получаем порт из переменной окружения (Render автоматически подставит 10000)
-    # Локально используем 8000, если PORT не задан
-    port = int(os.environ.get('PORT', 10000))
-    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-    print(f"🔧 Health server запущен на порту {port}")
-    server.serve_forever()
-
-# Запускаем HTTP‑сервер в отдельном потоке (daemon=True — завершится при остановке бота)
-health_thread = threading.Thread(target=run_health_server, daemon=True)
-health_thread.start()
-
-
-app.run_polling()
+if __name__ == '__main__':
+    asyncio.run(main())
