@@ -4,6 +4,7 @@ import logging
 import random
 import sqlite3
 import re
+import threading
 from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -27,7 +28,6 @@ ADMIN_ID = 7770044439
 class Database:
     def __init__(self, db_path="bot.db"):
         self.db_path = db_path
-        # check_same_thread=False нужен для работы SQLite в веб-приложениях
         with sqlite3.connect(self.db_path, check_same_thread=False) as conn:
             conn.execute('''CREATE TABLE IF NOT EXISTS users 
                            (user_id INTEGER PRIMARY KEY, name TEXT, score INTEGER DEFAULT 0)''')
@@ -64,6 +64,33 @@ QUESTIONS = [
     {"q": "натурал?", "opts": ["да", "нет", "не натурал"], "a": "да"}
 ]
 
+# --- СПИСКИ ДЛЯ СЛУЧАЙНЫХ ФАМИЛИЙ, ИМЕН И ОТЧЕСТВ ---
+RANDOM_LAST_NAMES = [
+    "Бутылкин", "Алкашов", "Пивозавров", "Заливайко", "Чекушкин", "Закусонов", 
+    "Подзаборный", "Опохмелов", "Шмурдяк", "Дрожжевой", "Сушняков", "Тунеядцев"
+]
+
+RANDOM_FIRST_NAMES = [
+    "Гена", "Вася", "Петя", "Толик", "Серега", "Антон", "Димон", "Вован", 
+    "Славик", "Валера", "Гоша", "Эдик", "Михалыч", "Пашок", "Кирюха"
+]
+
+RANDOM_MIDDLE_NAMES = [
+    "Петрович", "Васильевич", "Анатольевич", "Сергеевич", "Владимирович", 
+    "Игоревич", "Валерьевич", "Михайлович", "Александрович", "Дмитриевич"
+]
+
+# --- СПИСКИ ДЛЯ СЛУЧАЙНЫХ АДРЕСОВ ---
+RANDOM_CITIES = [
+    "г. Мухосранск", "г. Запивонск", "г. Бутырск", "ПГТ Колдыри", 
+    "г. Трезвоневидальск", "д. Гадюкино", "г. Нижние Обрыганы", "г. Верхние Грязи"
+]
+
+RANDOM_STREETS = [
+    "ул. Пивных героев", "пер. Разливной", "проезд Хмельной", "ул. Трезвости (нечетная сторона)", 
+    "ул. Подзаборная", "тупик Опохмелочный", "бульвар Закусочный", "ул. Полторашная"
+]
+
 # --- ЛОГИКА ОТРИСОВКИ МЕМА ---
 def create_meme(image_path, text, output_path):
     try:
@@ -71,13 +98,44 @@ def create_meme(image_path, text, output_path):
             img = img.convert("RGB")
             draw = ImageDraw.Draw(img)
             w, h = img.size
-            fs = int(h * 0.1)
-            try: font = ImageFont.truetype("arial.ttf", fs)
-            except: font = ImageFont.load_default()
+            
+            # Начальный (максимальный) размер шрифта — 12% от высоты картинки
+            fs = int(h * 0.12)
+            
+            # Пробуем загрузить шрифт, иначе берем дефолтный
+            try: 
+                font = ImageFont.truetype("arial.ttf", fs)
+                
+                # Умный подбор размера: если текст шире, чем 90% ширины картинки, 
+                # уменьшаем шрифт, пока он не влезет красиво
+                while fs > 10:
+                    bbox = draw.textbbox((0, 0), text, font=font)
+                    text_w = bbox[2] - bbox[0]
+                    if text_w < int(w * 0.9):
+                        break
+                    fs -= 2
+                    font = ImageFont.truetype("arial.ttf", fs)
+            except: 
+                # Если arial.ttf нет на сервере, юзаем дефолтный, но увеличиваем его масштаб
+                # (load_default в новых версиях Pillow поддерживает размер)
+                try:
+                    font = ImageFont.load_default(size=int(h * 0.08))
+                except:
+                    font = ImageFont.load_default()
 
+            # Финальный замер для точного центрирования
             bbox = draw.textbbox((0, 0), text, font=font)
-            tx, ty = (w - (bbox[2]-bbox[0])) / 2, h - (bbox[3]-bbox[1]) - 50
-            draw.text((tx, ty), text, font=font, fill="white", stroke_width=3, stroke_fill="black")
+            text_w = bbox[2] - bbox[0]
+            text_h = bbox[3] - bbox[1]
+            
+            # Центрируем по горизонтали, а по вертикали двигаем к нижнему краю (с отступом)
+            tx = (w - text_w) / 2
+            ty = h - text_h - int(h * 0.08)
+            
+            # Жирная черная обводка, чтобы текст читался на любом фоне
+            stroke_w = max(2, int(fs * 0.08))
+            
+            draw.text((tx, ty), text, font=font, fill="white", stroke_width=stroke_w, stroke_fill="black")
             img.save(output_path, "JPEG")
         return True
     except Exception as e:
@@ -146,6 +204,50 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     low_text = text.lower()
     
+    # --- ФУНКЦИЯ: ПРОВЕРКА (ДРАМАТИЧЕСКИЙ ДЕАНОН ФИО) ---
+    if low_text.startswith("докс"):
+        target_mention = ""
+        target_name = "кого-то"
+        
+        if update.message.reply_to_message:
+            user = update.message.reply_to_message.from_user
+            target_name = user.first_name
+            target_mention = f"@{user.username}" if user.username else f"[{user.first_name}](tg://user?id={user.id})"
+        else:
+            match = re.search(r'@(\w+)', text)
+            if match: 
+                target_mention = f"@{match.group(1)}"
+                target_name = target_mention
+            else:
+                await update.message.reply_text("⚠️ Отметь человека через @ или ответь на его сообщение.")
+                return
+        
+        # ЭТАП 1: Тревога
+        await update.message.reply_text(f"🚨 {target_mention}, вас задеанонили...", parse_mode="Markdown")
+        
+        await asyncio.sleep(1.5)
+        
+        # Генерируем случайное ФИО (Фамилия Имя Отчество) и адрес
+        fake_last_name = random.choice(RANDOM_LAST_NAMES)
+        fake_name = random.choice(RANDOM_FIRST_NAMES)
+        fake_middle_name = random.choice(RANDOM_MIDDLE_NAMES)
+        
+        fake_city = random.choice(RANDOM_CITIES)
+        fake_street = random.choice(RANDOM_STREETS)
+        fake_house = random.randint(1, 150)
+        fake_flat = random.randint(1, 350)
+        
+        # ЭТАП 2: Полный паспортный отчет
+        response_text = (
+            f"🔍 **Результаты слива базы данных для {target_name}:**\n\n"
+            f"🪪 Настоящее ФИО: **{fake_last_name} {fake_name} {fake_middle_name}**\n"
+            f"🏠 Адрес прописки: `{fake_city}, {fake_street}, д. {fake_house}, кв. {fake_flat}`"
+        )
+        
+        await update.message.reply_text(response_text, parse_mode="Markdown")
+        return
+
+    # Команда "ударить"
     if low_text.startswith("ударить"):
         attacker = update.effective_user.first_name
         target = "кого-то"
@@ -176,7 +278,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         path = f"temp/in_{update.effective_user.id}.jpg"
         await f.download_to_drive(path)
         context.user_data.update({"image_path": path, "wait_for_photo": False, "wait_for_text": True})
-        await update.message.reply_text("Картинку принял. Пиши текст!")
+        await update.message.reply_text("напиши текст")
 
 async def add_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
@@ -201,11 +303,11 @@ async def remove_points_command(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("Ошибка. Юзай: /remove_points ID ОЧКИ")
 
 
-import threading
-
+# --- WEB СЕРВЕР (FLASK) ---
 app = Flask(__name__)
+application = None
+loop = None
 
-# Маршруты ДОЛЖНЫ быть определены вне любых функций
 @app.route('/')
 def index():
     return "Статус: OK", 200
@@ -216,14 +318,21 @@ def ping():
 
 @app.route('/' + (BOT_TOKEN or ''), methods=['POST'])
 def webhook():
-    update_data = request.get_json(force=True)
-    update = Update.de_json(update_data, application.bot)
-    # Передаем в цикл бота
-    loop.call_soon_threadsafe(asyncio.create_task, application.process_update(update))
-    return 'OK', 200
+    try:
+        update_data = request.get_json(force=True)
+        if not update_data:
+            return 'No data', 400
+            
+        update = Update.de_json(update_data, application.bot)
+        
+        if loop and application:
+            loop.call_soon_threadsafe(asyncio.create_task, application.process_update(update))
+        return 'OK', 200
+    except Exception as e:
+        logger.error(f"Ошибка во время обработки вебхука: {e}")
+        return 'Error', 500
 
 def run_flask():
-    # Используем debug=False для продакшена на Render
     logger.info(f"Flask стартует на порту {PORT}")
     app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
 
@@ -247,29 +356,23 @@ async def start_bot():
     await application.start()
 
     if WEBHOOK_URL:
-        # Настройка вебхука
         url = WEBHOOK_URL.replace("http://", "https://").rstrip('/')
         await application.bot.set_webhook(url=f"{url}/{BOT_TOKEN}", drop_pending_updates=True)
         logger.info(f"✅ Вебхук установлен: {url}/{BOT_TOKEN}")
         
-        # ЗАПУСКАЕМ ВЕБ-СЕРВЕР В ФОНЕ
         flask_thread = threading.Thread(target=run_flask, daemon=True)
         flask_thread.start()
         
-        # Бот должен продолжать работать в основном потоке
         while True:
             await asyncio.sleep(3600)
     else:
-        # Локальный запуск через Polling
         logger.info("✅ Запуск в режиме Polling")
         await application.updater.start_polling()
         while True:
             await asyncio.sleep(1)
 
 if __name__ == '__main__':
-    # Создаем папку для временных файлов, если её нет
     os.makedirs("temp", exist_ok=True)
-    
     try:
         asyncio.run(start_bot())
     except (KeyboardInterrupt, SystemExit):
