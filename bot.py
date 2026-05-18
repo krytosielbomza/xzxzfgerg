@@ -161,16 +161,21 @@ def create_meme(image_path, text, output_path):
             w, h = img.size
             fs = int(h * 0.12)
             
+            # Указываем путь к твоему шрифту в папке font
+            # Если файл называется иначе (например, impact.ttf), замени имя ниже
+            font_path = "font/arial.ttf"
+            
             try: 
-                font = ImageFont.truetype("arial.ttf", fs)
+                font = ImageFont.truetype(font_path, fs)
                 while fs > 10:
                     bbox = draw.textbbox((0, 0), text, font=font)
                     text_w = bbox[2] - bbox[0]
                     if text_w < int(w * 0.9):
                         break
                     fs -= 2
-                    font = ImageFont.truetype("arial.ttf", fs)
-            except: 
+                    font = ImageFont.truetype(font_path, fs)
+            except Exception as font_err:
+                logger.warning(f"Не удалось загрузить кастомный шрифт {font_path}: {font_err}. Использую дефолтный.")
                 try: font = ImageFont.load_default(size=int(h * 0.08))
                 except: font = ImageFont.load_default()
 
